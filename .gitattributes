@@ -1,0 +1,2 @@
+DataPreprocess/RawData/result.json filter=lfs diff=lfs merge=lfs -text
+DataPreprocess/RawData/air_raids_history.json filter=lfs diff=lfs merge=lfs -text
