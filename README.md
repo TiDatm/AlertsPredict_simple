@@ -2,7 +2,7 @@
                          ALERTSPREDICT_SIMPLE
 ========================================================================
 
-Author: TiDatm
+Author: Andriy Yablonskyy
 Repository: https://github.com/TiDatm/AlertsPredict_simple
 
 DESCRIPTION
@@ -58,20 +58,3 @@ The project primarily relies on the following libraries:
 - scikit-learn (Machine learning algorithms)
 - numpy (Numerical processing)
 - requests (Data fetching, if applicable)
-
-CONTRIBUTING
-------------
-1. Fork the Project.
-2. Create your Feature Branch (git checkout -b feature/AmazingFeature).
-3. Commit your Changes (git commit -m 'Add some AmazingFeature').
-4. Push to the Branch (git push origin feature/AmazingFeature).
-5. Open a Pull Request.
-
-LICENSE
--------
-Distributed under the MIT License. See the repository for more details.
-
-CONTACT
--------
-Project Link: https://github.com/TiDatm/AlertsPredict_simple
-========================================================================
