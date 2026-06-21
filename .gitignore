@@ -3,8 +3,9 @@ DataPreprocess/FinalData/X_dataset.csv
 DataPreprocess/FinalData/Y_dataset.csv
 DataPreprocess/RawData/air_raids_output.csv
 
-# PyTorch checkpoints
-AlertModel/checkpoints/
+# PyTorch checkpoints (ignore all except the best model)
+AlertModel/checkpoints/*
+!AlertModel/checkpoints/best-lstm-alert-model.ckpt
 
 # Python caching
 **/__pycache__/
