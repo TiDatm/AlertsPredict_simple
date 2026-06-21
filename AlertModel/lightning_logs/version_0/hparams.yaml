@@ -1,0 +1,7 @@
+dropout_prob: 0.3
+hidden_size: 256
+input_size: 4870
+lr: 0.001
+num_layers: 1
+output_size: 1622
+weight_decay: 0.001
