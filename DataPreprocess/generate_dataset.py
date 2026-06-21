@@ -1,11 +1,12 @@
 # generate_dataset.py
 import json
 import csv
+import numpy as np
 import pandas as pd
 from datetime import timedelta
 from pathlib import Path
 from collections import deque
-from tqdm import tqdm  # Progress bar library
+from tqdm import tqdm
 
 # Configurable constants
 SAMPLE_INTERVAL_MINUTES = 5
@@ -21,7 +22,6 @@ def normalize_name(name):
     name = name.strip().lower().replace(' ', '_')
     name = name.strip('_').strip('.')
     
-    # Common regional/city-level alert synonyms to official database matches
     synonyms = {
         "франківська_область": "івано-франківська_область",
         "франківська_область.": "івано-франківська_область",
@@ -61,7 +61,7 @@ def normalize_name(name):
 
 def build_flat_mapping(hierarchy):
     """
-    Flattens the structural tree and yields ordered units to form CSV headers.
+    Flattens the structural tree and yields ordered units.
     """
     unit_to_idx = {}
     unit_names = []
@@ -94,8 +94,6 @@ def build_flat_mapping(hierarchy):
 def build_propagated_state(active_explicit, hierarchy, unit_to_idx):
     """
     Constructs a flattened state vector using downward propagation.
-    Oblast alert activation automatically cascades to nested Rayons and Hromadas.
-    Under upward isolation, selective Hromada alerts do not propagate up to parents.
     """
     state_vec = [0] * len(unit_to_idx)
 
@@ -111,7 +109,6 @@ def build_propagated_state(active_explicit, hierarchy, unit_to_idx):
             d_uid = district["uid"]
             d_idx = unit_to_idx.get(d_uid)
             
-            # District is active if explicitly active OR if parent region is active
             d_active = r_active or active_explicit.get(d_uid, False)
             if d_active and d_idx is not None:
                 state_vec[d_idx] = 1
@@ -120,7 +117,6 @@ def build_propagated_state(active_explicit, hierarchy, unit_to_idx):
                 c_uid = community["uid"]
                 c_idx = unit_to_idx.get(c_uid)
                 
-                # Hromada is active if parent district is active OR if explicitly active
                 c_active = d_active or active_explicit.get(c_uid, False)
                 if c_active and c_idx is not None:
                     state_vec[c_idx] = 1
@@ -133,7 +129,8 @@ def generate_csv_datasets_stream(hierarchy_json_path, alerts_csv_path, output_x_
         hierarchy = json.load(f)
 
     unit_to_idx, unit_names, name_to_uid_lookup = build_flat_mapping(hierarchy)
-    print(f"Total structured units to be mapped as CSV columns: {len(unit_names)}")
+    num_units = len(unit_names)
+    print(f"Total structured units: {num_units}")
 
     # Load alert history
     if not Path(alerts_csv_path).exists():
@@ -149,19 +146,31 @@ def generate_csv_datasets_stream(hierarchy_json_path, alerts_csv_path, output_x_
     end_time = df['exact_time'].max()
     print(f"Historical timeline bounds: {start_time} to {end_time}")
 
+    # Convert pandas Series to fast numpy arrays to bypass indexing overhead in loop
+    event_times_np = df['exact_time'].values
+    event_regions_np = df['region'].values
+    event_statuses_np = df['status'].values
+
     sample_interval = timedelta(minutes=SAMPLE_INTERVAL_MINUTES)
     offset_steps = int(RNN_TARGET_OFFSET_MINUTES / SAMPLE_INTERVAL_MINUTES)
 
-    # Pre-generate the complete timeline sequence for progress calculation
+    # Pre-generate the complete timeline sequence
     timeline = pd.date_range(start=start_time, end=end_time, freq=sample_interval)
 
-    # Instantiate the sliding window buffer
-    # It will contain tuples of (timestamp, state_vector)
+    # Instantiate the sliding window buffer to pair inputs X(t) with target labels Y(t+10)
     state_buffer = deque(maxlen=offset_steps + 1)
 
     active_explicit = {}  # Tracks explicit, un-propagated alerts
     event_idx = 0
     num_events = len(df)
+
+    # Setup vectorized tracking states
+    last_state_arr = np.zeros(num_units, dtype=np.uint8)
+    last_change_time_minutes = np.zeros(num_units, dtype=np.float32)
+    last_direction_arr = np.zeros(num_units, dtype=np.int8)
+
+    state_vector_arr = np.zeros(num_units, dtype=np.uint8)
+    first_step = True
 
     # Open CSV files directly for streaming output
     print(f"Streaming outputs directly to '{output_x_csv}' and '{output_y_csv}'...")
@@ -171,17 +180,24 @@ def generate_csv_datasets_stream(hierarchy_json_path, alerts_csv_path, output_x_
         writer_x = csv.writer(f_x)
         writer_y = csv.writer(f_y)
 
-        # Write CSV headers
-        writer_x.writerow(['timestamp'] + unit_names)
-        writer_y.writerow(['target_timestamp'] + unit_names)
+        # Write CSV headers: Explicitly grouped so X has States first (essential for the model's skip connection)
+        state_headers = [f"{name}_state" for name in unit_names]
+        elapsed_headers = [f"{name}_elapsed" for name in unit_names]
+        direction_headers = [f"{name}_direction" for name in unit_names]
+        
+        writer_x.writerow(['timestamp'] + state_headers + elapsed_headers + direction_headers)
+        writer_y.writerow(['target_timestamp'] + state_headers)
 
         # Wrap the timeline iteration inside a tqdm progress bar
         for current_time in tqdm(timeline, desc="Streaming dataset generation"):
-            # Update explicit active dictionary with events occurring in the current interval window
-            while event_idx < num_events and df.loc[event_idx, 'exact_time'] <= current_time:
-                row = df.loc[event_idx]
-                raw_region_name = row['region']
-                status = int(row['status'])
+            current_time_np = np.datetime64(current_time)
+            current_minutes_since_start = (current_time - start_time).total_seconds() / 60.0
+            
+            # 1. Process all events up to current_time (Using ultra-fast numpy arrays)
+            events_processed = False
+            while event_idx < num_events and event_times_np[event_idx] <= current_time_np:
+                raw_region_name = event_regions_np[event_idx]
+                status = int(event_statuses_np[event_idx])
 
                 normalized = normalize_name(raw_region_name)
                 uid = name_to_uid_lookup.get(normalized)
@@ -191,38 +207,62 @@ def generate_csv_datasets_stream(hierarchy_json_path, alerts_csv_path, output_x_
                         active_explicit[uid] = True
                     else:
                         active_explicit.pop(uid, None)
+                    events_processed = True
                 event_idx += 1
 
-            # Run tree propagation and build state vector
-            state_vector = build_propagated_state(active_explicit, hierarchy, unit_to_idx)
+            # 2. Lazy Propagation check: Only rebuild the state representation if an event was processed
+            if events_processed or first_step:
+                state_vector_arr = np.array(
+                    build_propagated_state(active_explicit, hierarchy, unit_to_idx), 
+                    dtype=np.uint8
+                )
+                first_step = False
+
+            # 3. Vectorized feature engineering (NumPy)
+            changed_mask = state_vector_arr != last_state_arr
             
-            # Push current time and state to the buffer
-            state_buffer.append((current_time, state_vector))
+            # For units that changed state, update their timestamps and transition directions
+            last_change_time_minutes[changed_mask] = current_minutes_since_start
+            last_direction_arr[changed_mask] = np.where(state_vector_arr[changed_mask] == 1, 1, -1)
+            last_state_arr[changed_mask] = state_vector_arr[changed_mask]
+            
+            # Calculate and scale elapsed time (capped at 24 hours / 1440 minutes)
+            elapsed_minutes_arr = current_minutes_since_start - last_change_time_minutes
+            scaled_elapsed_arr = np.minimum(elapsed_minutes_arr, 1440.0) / 1440.0
+            
+            # Build the combined flat step feature representation
+            # We convert numpy arrays to fast python lists to optimize writing to CSV
+            flat_engineered_step = (
+                state_vector_arr.tolist() + 
+                np.round(scaled_elapsed_arr, 5).tolist() + 
+                last_direction_arr.tolist()
+            )
+            
+            # Push current time and complete feature row to the buffer
+            state_buffer.append((current_time, flat_engineered_step, state_vector_arr.tolist()))
 
             # Once the sliding buffer is full, we can yield and write the pair
             if len(state_buffer) == offset_steps + 1:
-                x_time, x_state = state_buffer[0]  # Oldest item in buffer (t)
-                y_time, y_state = state_buffer[-1] # Newest item in buffer (t + 10 mins)
+                x_time, x_features, _ = state_buffer[0]            # Input features at time t
+                y_time, _, y_target_states = state_buffer[-1]      # Target states at time t + 10 mins
 
                 # Format timestamps to standard string layout
                 x_time_str = x_time.strftime('%Y-%m-%dT%H:%M:%S')
                 y_time_str = y_time.strftime('%Y-%m-%dT%H:%M:%S')
 
                 # Write rows directly to disk
-                writer_x.writerow([x_time_str] + x_state)
-                writer_y.writerow([y_time_str] + y_state)
+                writer_x.writerow([x_time_str] + x_features)
+                writer_y.writerow([y_time_str] + y_target_states)
 
     print("Processing complete. Memory usage remained minimal.")
 
-
-
-
 if __name__ == "__main__":
-    HIERARCHY_JSON = "C:\\Users\\yablo\\OneDrive\\Desktop\\CodeStudio\\AlertsPredict_simple\\DataPreprocess\\FinalData\\hierarchy.json"
-    ALERTS_CSV = "C:\\Users\\yablo\\OneDrive\\Desktop\\CodeStudio\\AlertsPredict_simple\\DataPreprocess\\RawData\\air_raids_output.csv"
+    SCRIPT_DIR = Path(__file__).resolve().parent
+    HIERARCHY_JSON = SCRIPT_DIR / "FinalData" / "hierarchy.json"
+    ALERTS_CSV = SCRIPT_DIR / "RawData" / "air_raids_output.csv"
 
     # Human-readable output dataset files
-    OUTPUT_X_CSV = "C:\\Users\\yablo\\OneDrive\\Desktop\\CodeStudio\\AlertsPredict_simple\\DataPreprocess\\FinalData\\X_dataset.csv"
-    OUTPUT_Y_CSV = "C:\\Users\\yablo\\OneDrive\\Desktop\\CodeStudio\\AlertsPredict_simple\\DataPreprocess\\FinalData\\Y_dataset.csv"
+    OUTPUT_X_CSV = SCRIPT_DIR / "FinalData" / "X_dataset.csv"
+    OUTPUT_Y_CSV = SCRIPT_DIR / "FinalData" / "Y_dataset.csv"
     
     generate_csv_datasets_stream(HIERARCHY_JSON, ALERTS_CSV, OUTPUT_X_CSV, OUTPUT_Y_CSV)

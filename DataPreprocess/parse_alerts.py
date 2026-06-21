@@ -182,7 +182,8 @@ def process_air_raid_history(input_json_path, output_csv_path):
 
 if __name__ == "__main__":
     # Adjust paths if necessary
-    INPUT_JSON = "C:\\Users\\yablo\\OneDrive\\Desktop\\CodeStudio\\AlertsPredict_simple\\DataPreprocess\\RawData\\air_raids_history.json"
-    OUTPUT_CSV = "C:\\Users\\yablo\\OneDrive\\Desktop\\CodeStudio\\AlertsPredict_simple\\DataPreprocess\\RawData\\air_raids_output.csv"
+    SCRIPT_DIR = Path(__file__).resolve().parent
+    INPUT_JSON = SCRIPT_DIR / "RawData" / "air_raids_history.json"
+    OUTPUT_CSV = SCRIPT_DIR / "RawData" / "air_raids_output.csv"
     
     process_air_raid_history(INPUT_JSON, OUTPUT_CSV)

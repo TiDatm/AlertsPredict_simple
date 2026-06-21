@@ -117,6 +117,7 @@ def parse_hierarchy(csv_path, json_output_path):
 
 if __name__ == "__main__":
     # Ensure this matches your input raw CSV filename
-    INPUT_CSV = "C:\\Users\\yablo\\OneDrive\\Desktop\\CodeStudio\\AlertsPredict_simple\\DataPreprocess\\RawData\\alerts.in.ua _ Райони, області, громади - Sheet1 (1).csv"
-    OUTPUT_JSON = "C:\\Users\\yablo\\OneDrive\\Desktop\\CodeStudio\\AlertsPredict_simple\\DataPreprocess\\FinalData\\hierarchy.json"
+    SCRIPT_DIR = Path(__file__).resolve().parent
+    INPUT_CSV = SCRIPT_DIR / "RawData" / "alerts.in.ua _ Райони, області, громади - Sheet1 (1).csv"
+    OUTPUT_JSON = SCRIPT_DIR / "FinalData" / "hierarchy.json"
     parse_hierarchy(INPUT_CSV, OUTPUT_JSON)
